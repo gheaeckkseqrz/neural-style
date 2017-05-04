@@ -493,16 +493,20 @@ function Gram:__init()
 end
 
 function Gram:updateOutput(input)
-  assert(input:dim() == 3)
-  local C, H, W = input:size(1), input:size(2), input:size(3)
-  local x_flat = input:view(C, H * W)
-  self.output:resize(C, C)
-  self.output:mm(x_flat, x_flat:t())
-  return self.output
+   input = input:clone()
+   for i=1, input:size(1) do input[i]:csub(torch.mean(input[i])) end
+   assert(input:dim() == 3)
+   local C, H, W = input:size(1), input:size(2), input:size(3)
+   local x_flat = input:view(C, H * W)
+   self.output:resize(C, C)
+   self.output:mm(x_flat, x_flat:t())
+   return self.output
 end
 
 function Gram:updateGradInput(input, gradOutput)
-  assert(input:dim() == 3 and input:size(1))
+   input = input:clone()
+   for i=1, input:size(1) do input[i]:csub(torch.mean(input[i])) end
+   assert(input:dim() == 3 and input:size(1))
   local C, H, W = input:size(1), input:size(2), input:size(3)
   local x_flat = input:view(C, H * W)
   self.gradInput:resize(C, H * W):mm(gradOutput, x_flat)
