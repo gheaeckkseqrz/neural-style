@@ -1,3 +1,4 @@
+require 'SpatialCircularPadding'
 require 'torch'
 require 'nn'
 require 'image'
@@ -5,6 +6,7 @@ require 'optim'
 
 require 'loadcaffe'
 
+require 'style_activation_loss'
 
 local cmd = torch.CmdLine()
 
@@ -47,6 +49,7 @@ cmd:option('-seed', -1)
 
 cmd:option('-content_layers', 'relu4_2', 'layers for content')
 cmd:option('-style_layers', 'relu1_1,relu2_1,relu3_1,relu4_1,relu5_1', 'layers for style')
+cmd:option('-loss_type', 'gram', 'gram|mean|both')
 
 
 local function main(params)
@@ -123,6 +126,15 @@ local function main(params)
       local layer = cnn:get(i)
       local name = layer.name
       local layer_type = torch.type(layer)
+      local is_conv = (layer_type == 'cudnn.SpatialConvolution' or layer_type == 'nn.SpatialConvolution')
+      if is_conv then
+	 local m = nn.SpatialCircularPadding(1, 1, 1, 1):cuda()
+	 m.layer = layer
+	 net:add(m)
+--	 table.insert(circular_conv_layers, m)
+	 layer.padW = 0
+	 layer.padH = 0
+      end
       local is_pooling = (layer_type == 'cudnn.SpatialMaxPooling' or layer_type == 'nn.SpatialMaxPooling')
       if is_pooling and params.pooling == 'avg' then
         assert(layer.padW == 0 and layer.padH == 0)
@@ -146,9 +158,19 @@ local function main(params)
       if name == style_layers[next_style_idx] then
         print("Setting up style layer  ", i, ":", layer.name)
         local norm = params.normalize_gradients
-        local loss_module = nn.StyleLoss(params.style_weight, norm):type(dtype)
-        net:add(loss_module)
-        table.insert(style_losses, loss_module)
+
+	if params.loss_type == 'gram' or params.loss_type == 'both' then
+	   local loss_module = nn.StyleLoss(params.style_weight, norm):type(dtype)
+	   net:add(loss_module)
+	   table.insert(style_losses, loss_module)
+	end
+
+	if params.loss_type == 'mean' or params.loss_type == 'both' then
+	   local mean_module = nn.StyleActivationsLoss(params.style_weight, norm):type(dtype)
+	   net:add(mean_module)
+	   table.insert(style_losses, mean_module)
+	end
+
         next_style_idx = next_style_idx + 1
       end
     end
@@ -252,7 +274,9 @@ local function main(params)
         print(string.format('  Content %d loss: %f', i, loss_module.loss))
       end
       for i, loss_module in ipairs(style_losses) do
-        print(string.format('  Style %d loss: %f', i, loss_module.loss))
+	 print(string.format('  Style %d loss: %f', i, loss_module.loss),
+	       torch.min(loss_module.localGradInput), torch.max(loss_module.localGradInput),
+	       torch.norm(loss_module.localGradInput), torch.type(loss_module))
       end
       print(string.format('  Total loss: %f', loss))
     end
@@ -558,19 +582,22 @@ function StyleLoss:updateOutput(input)
 end
 
 function StyleLoss:updateGradInput(input, gradOutput)
-  if self.mode == 'loss' then
-    local dG = self.crit:backward(self.G, self.target)
-    dG:div(input:nElement())
-    self.gradInput = self.gram:backward(input, dG)
-    if self.normalize then
-      self.gradInput:div(torch.norm(self.gradInput, 1) + 1e-8)
-    end
-    self.gradInput:mul(self.strength)
-    self.gradInput:add(gradOutput)
-  else
-    self.gradInput = gradOutput
-  end
-  return self.gradInput
+   if self.mode == 'loss' then
+      local dG = self.crit:backward(self.G, self.target)
+      dG:div(input:nElement())
+      self.gradInput = self.gram:backward(input, dG)
+      self.gradInput:mul(self.strength)
+      self.localGradInput = self.gradInput:clone()
+
+      if self.normalize and torch.norm(self.gradInput, 2) > 1 then
+	 self.gradInput:div(torch.norm(self.gradInput, 2))
+      end
+
+      self.gradInput:add(gradOutput)
+   else
+      self.gradInput = gradOutput
+   end
+   return self.gradInput
 end
 
 
