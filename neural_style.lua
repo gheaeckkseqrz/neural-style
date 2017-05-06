@@ -56,6 +56,12 @@ local function main(params)
   if params.backend == 'clnn' then loadcaffe_backend = 'nn' end
   local cnn = loadcaffe.load(params.proto_file, params.model_file, loadcaffe_backend):type(dtype)
 
+  for i=1, #cnn do
+     if torch.type(cnn:get(i)) == 'nn.ReLU' then
+        cnn:get(i).inplace = false
+     end
+  end
+
   local content_image = image.load(params.content_image, 3)
   content_image = image.scale(content_image, params.image_size, 'bilinear')
   local content_image_caffe = preprocess(content_image):float()
@@ -65,7 +71,7 @@ local function main(params)
   local style_images_caffe = {}
   for _, img_path in ipairs(style_image_list) do
     local img = image.load(img_path, 3)
-    img = image.scale(img, style_size, 'bilinear')
+--    img = image.scale(img, style_size, 'bilinear')
     local img_caffe = preprocess(img):float()
     table.insert(style_images_caffe, img_caffe)
   end
